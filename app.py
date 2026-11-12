@@ -15,7 +15,7 @@ st.set_page_config(
 # --------------------------------------------------
 # Title
 # --------------------------------------------------
-st.title("🔊 Jimin's Multilingual TTS")
+st.title(":blush: Jimin's Multilingual TTS")
 
 st.write(
     "Generate speech using Streamlit, "

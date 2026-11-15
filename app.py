@@ -1,193 +1,214 @@
+import json
+import random
+from pathlib import Path
 import streamlit as st
-import streamlit.components.v1 as components
-from gtts import gTTS
-from io import BytesIO
 
-# --------------------------------------------------
-# Page setup
-# --------------------------------------------------
-st.set_page_config(
-    page_title="Multilingual TTS",
-    page_icon="🔊",
-    layout="centered"
-)
+st.set_page_config(page_title="3,000단어 랜덤 학습장", page_icon="📚", layout="centered")
 
-# --------------------------------------------------
-# Title
-# --------------------------------------------------
-st.title(":blush: Jimin's Multilingual TTS")
+PROGRESS_FILE = Path("progress.json")
+BATCH_SIZE = 20
 
-st.write(
-    "Generate speech using Streamlit, "
-    "or try the browser-based HTML version."
-)
+# 내장 단어 데이터 (이 리스트에 3,000여 개 단어를 모두 넣어 하나의 파일로 실행할 수 있습니다)
+BUILTIN_WORDS = [
+    {"id": 1, "word": "abundant", "meaning": "풍부한, 많은"},
+    {"id": 2, "word": "benevolent", "meaning": "자애로운, 인정 많은"},
+    {"id": 3, "word": "candid", "meaning": "솔직한, 숨김없는"},
+    {"id": 4, "word": "diligent", "meaning": "근면한, 성실한"},
+    {"id": 5, "word": "eloquent", "meaning": "웅변의, 달변인"},
+    {"id": 6, "word": "frugal", "meaning": "검소한, 절약하는"},
+    {"id": 7, "word": "gregarious", "meaning": "사교적인"},
+    {"id": 8, "word": "hinder", "meaning": "방해하다, 지연시키다"},
+    {"id": 9, "word": "impartial", "meaning": "공정한, 치우치지 않는"},
+    {"id": 10, "word": "jeopardy", "meaning": "위험, 위태로움"},
+    {"id": 11, "word": "keen", "meaning": "예리한, 열망하는"},
+    {"id": 12, "word": "lucid", "meaning": "명쾌한, 투명한"},
+    {"id": 13, "word": "meticulous", "meaning": "꼼꼼한, 세심한"},
+    {"id": 14, "word": "novel", "meaning": "새로운, 참신한"},
+    {"id": 15, "word": "obscure", "meaning": "모호한, 무명의"},
+    {"id": 16, "word": "pragmatic", "meaning": "실용적인, 현실적인"},
+    {"id": 17, "word": "quaint", "meaning": "고풍스러운, 진기한"},
+    {"id": 18, "word": "resilient", "meaning": "회복력이 있는, 탄력 있는"},
+    {"id": 19, "word": "scrutinize", "meaning": "면밀히 조사하다"},
+    {"id": 20, "word": "tenacious", "meaning": "집요한, 완강한"},
+]
 
-# --------------------------------------------------
-# Tabs
-# --------------------------------------------------
-tab1, tab2 = st.tabs([
-    "🐳 Streamlit TTS",
-    "🌐 HTML TTS"
-])
 
-# ==================================================
-# TAB 1: Streamlit + gTTS
-# ==================================================
-with tab1:
+def load_words(uploaded_json=None) -> list[dict]:
+    """업로드된 JSON 파일이 있으면 사용하고, 없으면 내장 단어 목록(BUILTIN_WORDS)을 사용합니다."""
+    if uploaded_json is not None:
+        raw = json.load(uploaded_json)
+        words = []
+        for idx, item in enumerate(raw, start=1):
+            word = str(item.get("word", "")).strip()
+            meaning = str(item.get("meaning", "")).strip()
+            if word and meaning:
+                words.append({
+                    "id": int(item.get("id", idx)),
+                    "word": word,
+                    "meaning": meaning,
+                })
+        if words:
+            return words
 
-    languages = {
-        "🇺🇸 English — American": {
-            "lang": "en",
-            "tld": "com",
-            "sample": (
-                "Welcome! This is my TTS application for my future students. "
-                "I hope you enjoy this application."
-            )
-        },
+    return BUILTIN_WORDS
 
-        "🇬🇧 English — British": {
-            "lang": "en",
-            "tld": "co.uk",
-            "sample": (
-                "Welcome! This is my TTS application for my future students. "
-                "I hope you enjoy this application."
-            )
-        },
 
-        "🇰🇷 Korean": {
-            "lang": "ko",
-            "tld": "com",
-            "sample": (
-                "환영합니다! 이것은 제가 미래의 학생들을 위해 만든 "
-                "TTS 애플리케이션입니다. 이 애플리케이션을 즐겁게 사용하시길 바랍니다."
-            )
-        },
+def load_progress() -> dict:
+    if PROGRESS_FILE.exists():
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return {
+                "learned_ids": list(dict.fromkeys(data.get("learned_ids", []))),
+                "wrong_ids": list(dict.fromkeys(data.get("wrong_ids", []))),
+            }
+    return {"learned_ids": [], "wrong_ids": []}
 
-        "🇯🇵 Japanese": {
-            "lang": "ja",
-            "tld": "com",
-            "sample": (
-                "ようこそ！これは私が将来の生徒たちのために作った "
-                "TTSアプリケーションです。このアプリを楽しんでいただければ嬉しいです。"
-            )
-        },
 
-        "🇨🇳 Chinese": {
-            "lang": "zh-CN",
-            "tld": "com",
-            "sample": (
-                "欢迎！这是我为未来的学生制作的TTS应用程序。"
-                "希望你喜欢这个应用程序。"
-            )
-        },
+def save_progress(progress: dict) -> None:
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(progress, f, ensure_ascii=False, indent=2)
 
-        "🇫🇷 French": {
-            "lang": "fr",
-            "tld": "fr",
-            "sample": (
-                "Bienvenue ! Voici mon application de synthèse vocale "
-                "pour mes futurs élèves. J'espère que vous apprécierez cette application."
-            )
-        },
 
-        "🇪🇸 Spanish": {
-            "lang": "es",
-            "tld": "es",
-            "sample": (
-                "¡Bienvenidos! Esta es mi aplicación de texto a voz "
-                "para mis futuros estudiantes. Espero que disfruten de esta aplicación."
-            )
-        },
+def start_batch(mode: str) -> None:
+    """mode='all'이면 미학습 단어 위주로 20개, mode='wrong'이면 틀린 단어 중 20개를 랜덤 선택합니다."""
+    words = st.session_state.words
+    id_map = {w["id"]: w for w in words}
+    learned_set = set(st.session_state.progress["learned_ids"])
+    wrong_set = set(st.session_state.progress["wrong_ids"])
 
-        "🇩🇪 German": {
-            "lang": "de",
-            "tld": "de",
-            "sample": (
-                "Willkommen! Dies ist meine TTS-Anwendung für meine zukünftigen Schüler. "
-                "Ich hoffe, dass Ihnen diese Anwendung gefällt."
-            )
-        },
-
-        "🇻🇳 Vietnamese": {
-            "lang": "vi",
-            "tld": "com",
-            "sample": (
-                "Chào mừng! Đây là ứng dụng chuyển văn bản thành giọng nói "
-                "mà tôi tạo cho các học sinh tương lai của mình. "
-                "Tôi hy vọng các bạn sẽ thích ứng dụng này."
-            )
-        }
-    }
-
-    language_name = st.selectbox(
-        "Choose a language",
-        list(languages.keys())
-    )
-
-    selected = languages[language_name]
-
-    text = st.text_area(
-        "Enter text",
-        value=selected["sample"],
-        height=150
-    )
-
-    if st.button(
-        "🔊 Generate Speech",
-        type="primary",
-        use_container_width=True
-    ):
-
-        if not text.strip():
-            st.warning("Please enter some text first.")
-
+    if mode == "wrong":
+        pool = [id_map[wid] for wid in wrong_set if wid in id_map]
+    else:
+        unlearned = [w for w in words if w["id"] not in learned_set]
+        if len(unlearned) >= BATCH_SIZE:
+            pool = unlearned
         else:
-            try:
-                tts = gTTS(
-                    text=text,
-                    lang=selected["lang"],
-                    tld=selected["tld"]
-                )
+            pool = unlearned + [w for w in words if w["id"] in learned_set]
 
-                audio_file = BytesIO()
-                tts.write_to_fp(audio_file)
-                audio_file.seek(0)
+    random.shuffle(pool)
+    st.session_state.mode = mode
+    st.session_state.batch = pool[:BATCH_SIZE]
+    st.session_state.index = 0
+    st.session_state.reveal = False
 
-                st.success("Audio generated successfully!")
 
-                st.audio(
-                    audio_file,
-                    format="audio/mp3"
-                )
-
-                st.download_button(
-                    "⬇️ Download MP3",
-                    data=audio_file.getvalue(),
-                    file_name="tts_audio.mp3",
-                    mime="audio/mpeg",
-                    use_container_width=True
-                )
-
-            except Exception:
-                st.error("Could not generate audio.")
-
-# ==================================================
-# TAB 2: HTML version
-# ==================================================
-with tab2:
-
-    st.subheader("Browser-based TTS")
-
-    st.caption(
-        "This version uses HTML, JavaScript, "
-        "and the browser Web Speech API."
+with st.sidebar:
+    st.header("📂 단어 데이터")
+    uploaded_file = st.file_uploader(
+        "JSON 단어장 불러오기 (선택)",
+        type=["json"],
+        help="별도 JSON 파일이 없으면 코드 내 BUILTIN_WORDS 데이터를 바로 사용합니다.",
     )
 
-    with open("tts.html", "r", encoding="utf-8") as file:
-        html_code = file.read()
+current_words = load_words(uploaded_file)
 
-    components.html(
-        html_code,
-        height=750,
-        scrolling=True
+if "words" not in st.session_state or len(st.session_state.words) != len(current_words):
+    st.session_state.words = current_words
+    if "progress" not in st.session_state:
+        st.session_state.progress = load_progress()
+    start_batch("all")
+
+if "progress" not in st.session_state:
+    st.session_state.progress = load_progress()
+if "batch" not in st.session_state:
+    start_batch("all")
+
+valid_ids = {w["id"] for w in st.session_state.words}
+learned_set = set(st.session_state.progress["learned_ids"]) & valid_ids
+wrong_set = set(st.session_state.progress["wrong_ids"]) & valid_ids
+total_words = len(st.session_state.words)
+
+with st.sidebar:
+    st.divider()
+    st.header("📊 전체 학습 진도")
+    ratio = (len(learned_set) / total_words) if total_words else 0.0
+    st.progress(ratio, text=f"학습 완료: {len(learned_set)} / {total_words} ({ratio * 100:.1f}%)")
+    st.write(f"- 남은 미학습 단어: **{max(0, total_words - len(learned_set))}개**")
+    st.write(f"- 틀린 단어(복습 대상): **{len(wrong_set)}개**")
+
+    st.divider()
+    st.download_button(
+        label="💾 학습 진도 JSON 백업",
+        data=json.dumps(st.session_state.progress, ensure_ascii=False, indent=2),
+        file_name="progress.json",
+        mime="application/json",
+        use_container_width=True,
     )
+    if st.button("🔄 전체 진도 초기화", use_container_width=True):
+        st.session_state.progress = {"learned_ids": [], "wrong_ids": []}
+        save_progress(st.session_state.progress)
+        start_batch(st.session_state.mode)
+        st.rerun()
+
+st.title("📖 20단어 랜덤 학습 & 오답 복습")
+
+c1, c2 = st.columns(2)
+with c1:
+    if st.button(
+        "🎲 20단어 랜덤 시작",
+        use_container_width=True,
+        type="primary" if st.session_state.mode == "all" else "secondary",
+    ):
+        start_batch("all")
+        st.rerun()
+with c2:
+    if st.button(
+        f"❌ 틀린 단어 복습 ({len(wrong_set)}개)",
+        use_container_width=True,
+        disabled=(len(wrong_set) == 0),
+    ):
+        start_batch("wrong")
+        st.rerun()
+
+batch = st.session_state.batch
+idx = st.session_state.index
+
+if not batch:
+    st.info("현재 선택된 모드에 학습할 단어가 없습니다.")
+    st.stop()
+
+if idx >= len(batch):
+    st.success(f"🎉 {len(batch)}단어 세트를 마쳤습니다!")
+    if st.button("다음 20단어 뽑기", use_container_width=True, type="primary"):
+        start_batch(st.session_state.mode)
+        st.rerun()
+    st.stop()
+
+item = batch[idx]
+wid = item["id"]
+
+st.caption(
+    f"세트 진행: {idx + 1} / {len(batch)}  |  "
+    f"모드: {'일반 20단어' if st.session_state.mode == 'all' else '틀린 단어 복습'}"
+)
+
+with st.container(border=True):
+    st.markdown(f"## {item['word']}")
+    if st.session_state.reveal:
+        st.divider()
+        st.markdown(f"### {item['meaning']}")
+    else:
+        if st.button("뜻 보기", use_container_width=True):
+            st.session_state.reveal = True
+            st.rerun()
+
+col_bad, col_good = st.columns(2)
+with col_bad:
+    if st.button("😵 틀렸어요 (복습 추가)", use_container_width=True):
+        if wid not in st.session_state.progress["wrong_ids"]:
+            st.session_state.progress["wrong_ids"].append(wid)
+        save_progress(st.session_state.progress)
+        st.session_state.index += 1
+        st.session_state.reveal = False
+        st.rerun()
+
+with col_good:
+    if st.button("✅ 맞았어요 (완료)", use_container_width=True, type="primary"):
+        if wid not in st.session_state.progress["learned_ids"]:
+            st.session_state.progress["learned_ids"].append(wid)
+        if wid in st.session_state.progress["wrong_ids"]:
+            st.session_state.progress["wrong_ids"].remove(wid)
+        save_progress(st.session_state.progress)
+        st.session_state.index += 1
+        st.session_state.reveal = False
+        st.rerun()

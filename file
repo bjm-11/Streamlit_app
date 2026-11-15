@@ -1,0 +1,247 @@
+import json
+import random
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+
+st.set_page_config(page_title="단어장 학습 (3,000단어)", page_icon="📚", layout="centered")
+
+DATA_FILE = Path("words_data.json")
+PROGRESS_FILE = Path("learning_progress.json")
+BATCH_SIZE = 20
+
+
+def load_sample_words() -> list[dict]:
+    """실제 3,000단어 파일(JSON/CSV)이 없을 때 동작하는 샘플 데이터입니다."""
+    samples = [
+        ("abundant", "풍부한, 많은"),
+        ("benevolent", "자애로운, 인정 많은"),
+        ("candid", "솔직한, 숨김없는"),
+        ("diligent", "근면한, 성실한"),
+        ("eloquent", "웅변의, 달변인"),
+        ("frugal", "검소한, 절약하는"),
+        ("gregarious", "사교적인"),
+        ("hinder", "방해하다, 지연시키다"),
+        ("impartial", "공정한, 치우치지 않는"),
+        ("jeopardy", "위험, 위태로움"),
+    ]
+    return [
+        {"id": i + 1, "word": f"{w} #{i+1}", "meaning": m}
+        for i in range(3000)
+        for w, m in [samples[i % len(samples)]]
+    ]
+
+
+def load_words(uploaded_file=None) -> list[dict]:
+    """업로드된 CSV/JSON 또는 로컬 words_data.json에서 단어를 불러옵니다."""
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+            word_col = "word" if "word" in df.columns else df.columns[0]
+            meaning_col = "meaning" if "meaning" in df.columns else df.columns[1]
+            return [
+                {
+                    "id": idx + 1,
+                    "word": str(row[word_col]).strip(),
+                    "meaning": str(row[meaning_col]).strip(),
+                }
+                for idx, row in df.iterrows()
+                if pd.notna(row[word_col]) and pd.notna(row[meaning_col])
+            ]
+        elif uploaded_file.name.endswith(".json"):
+            data = json.load(uploaded_file)
+            return [
+                {
+                    "id": idx + 1,
+                    "word": str(item["word"]).strip(),
+                    "meaning": str(item["meaning"]).strip(),
+                }
+                for idx, item in enumerate(data)
+            ]
+
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [
+            {
+                "id": idx + 1,
+                "word": str(item["word"]).strip(),
+                "meaning": str(item["meaning"]).strip(),
+            }
+            for idx, item in enumerate(data)
+        ]
+
+    return load_sample_words()
+
+
+def load_progress() -> dict:
+    if PROGRESS_FILE.exists():
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "learned_ids": [],   # 최소 1회 이상 '맞음(알고 있음)' 처리된 단어 ID
+        "wrong_ids": [],     # 현재 복습이 필요한 틀린 단어 ID
+    }
+
+
+def save_progress(progress: dict) -> None:
+    with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
+        json.dump(progress, f, ensure_ascii=False, indent=2)
+
+
+def init_session(words: list[dict], progress: dict):
+    if "words" not in st.session_state or len(st.session_state.words) != len(words):
+        st.session_state.words = words
+        st.session_state.batch = []
+        st.session_state.batch_index = 0
+        st.session_state.show_meaning = False
+        st.session_state.mode = "all"  # "all" | "wrong"
+
+    if "progress" not in st.session_state:
+        st.session_state.progress = progress
+
+
+def start_new_batch(mode: str):
+    """선택한 모드('all': 미학습 우선 전체 학습, 'wrong': 틀린 단어 복습)로 최대 20개 세트를 구성합니다."""
+    words = st.session_state.words
+    learned_set = set(st.session_state.progress["learned_ids"])
+    wrong_set = set(st.session_state.progress["wrong_ids"])
+    id_to_word = {w["id"]: w for w in words}
+
+    if mode == "wrong":
+        pool = [id_to_word[wid] for wid in wrong_set if wid in id_to_word]
+    else:
+        # 아직 학습 완료하지 않은 단어를 우선으로 뽑고, 남은 단어가 20개 미만이면 전체에서 채움
+        unlearned = [w for w in words if w["id"] not in learned_set]
+        if len(unlearned) >= BATCH_SIZE:
+            pool = unlearned
+        else:
+            pool = unlearned + [w for w in words if w["id"] in learned_set]
+
+    random.shuffle(pool)
+    st.session_state.mode = mode
+    st.session_state.batch = pool[:BATCH_SIZE]
+    st.session_state.batch_index = 0
+    st.session_state.show_meaning = False
+
+
+# --- 사이드바: 데이터 업로드 및 진도 현황 ---
+with st.sidebar:
+    st.header("📂 단어 데이터 설정")
+    uploaded = st.file_uploader(
+        "단어장 파일 업로드 (CSV / JSON)",
+        type=["csv", "json"],
+        help="CSV는 word, meaning 컬럼, JSON은 [{'word': ..., 'meaning': ...}] 형식을 권장합니다.",
+    )
+
+words = load_words(uploaded)
+progress = load_progress()
+init_session(words, progress)
+
+if not st.session_state.batch:
+    start_new_batch("all")
+
+learned_set = set(st.session_state.progress["learned_ids"])
+wrong_set = set(st.session_state.progress["wrong_ids"])
+total_count = len(st.session_state.words)
+learned_count = len(learned_set & {w["id"] for w in st.session_state.words})
+wrong_count = len(wrong_set & {w["id"] for w in st.session_state.words})
+
+with st.sidebar:
+    st.divider()
+    st.header("📊 전체 학습 현황")
+    ratio = learned_count / total_count if total_count else 0.0
+    st.progress(ratio, text=f"전체 학습 완료: {learned_count} / {total_count} ({ratio*100:.1f}%)")
+    st.metric("남은 미학습 단어", max(0, total_count - learned_count))
+    st.metric("틀린 단어(복습 대상)", wrong_count)
+
+    st.divider()
+    if st.button("🔄 전체 진도 초기화", use_container_width=True):
+        st.session_state.progress = {"learned_ids": [], "wrong_ids": []}
+        save_progress(st.session_state.progress)
+        start_new_batch(st.session_state.mode)
+        st.rerun()
+
+
+# --- 메인 화면 ---
+st.title("📖 20단어 랜덤 학습 & 오답 복습")
+
+col_m1, col_m2, col_m3 = st.columns([1, 1, 1])
+with col_m1:
+    if st.button("🎲 일반 20단어 랜덤 뽑기", use_container_width=True, type="primary" if st.session_state.mode == "all" else "secondary"):
+        start_new_batch("all")
+        st.rerun()
+with col_m2:
+    if st.button(f"❌ 틀린 단어 복습 ({wrong_count}개)", use_container_width=True, disabled=(wrong_count == 0)):
+        start_new_batch("wrong")
+        st.rerun()
+with col_m3:
+    mode_label = "일반 학습(20개)" if st.session_state.mode == "all" else "오답 복습(최대 20개)"
+    st.info(f"현재 모드: **{mode_label}**")
+
+batch = st.session_state.batch
+idx = st.session_state.batch_index
+
+if not batch:
+    st.success("학습할 단어가 없습니다. 새 세트를 뽑아주세요.")
+    st.stop()
+
+# 현재 20단어 세트 완료 화면
+if idx >= len(batch):
+    st.success(f"🎉 이번 세트({len(batch)}단어) 학습을 완료했습니다!")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("다음 20단어 랜덤 시작", use_container_width=True, type="primary"):
+            start_new_batch(st.session_state.mode)
+            st.rerun()
+    with c2:
+        if wrong_count > 0 and st.button("틀린 단어 복습하기", use_container_width=True):
+            start_new_batch("wrong")
+            st.rerun()
+    st.stop()
+
+current_word = batch[idx]
+wid = current_word["id"]
+
+st.caption(f"세트 진행률: **{idx + 1} / {len(batch)}**  |  단어 번호: #{wid}")
+
+# 플래시카드 영역
+with st.container(border=True):
+    st.markdown(f"### {current_word['word']}")
+    if wid in wrong_set:
+        st.badge("복습 필요 단어", color="red")
+    elif wid in learned_set:
+        st.badge("학습 완료", color="green")
+
+    if st.session_state.show_meaning:
+        st.divider()
+        st.markdown(f"#### 뜻: {current_word['meaning']}")
+    else:
+        st.write("")
+        if st.button("👀 뜻 보기", use_container_width=True):
+            st.session_state.show_meaning = True
+            st.rerun()
+
+# 정답/오답 처리 버튼
+st.write("")
+b_wrong, b_right = st.columns(2)
+
+with b_wrong:
+    if st.button("😵 몰랐어요 / 틀렸어요 (복습 추가)", use_container_width=True):
+        if wid not in st.session_state.progress["wrong_ids"]:
+            st.session_state.progress["wrong_ids"].append(wid)
+        save_progress(st.session_state.progress)
+        st.session_state.batch_index += 1
+        st.session_state.show_meaning = False
+        st.rerun()
+
+with b_right:
+    if st.button("✅ 알아요 / 맞았어요 (학습 완료)", use_container_width=True, type="primary"):
+        if wid not in st.session_state.progress["learned_ids"]:
+            st.session_state.progress["learned_ids"].append(wid)
+        if wid in st.session_state.progress["wrong_ids"]:
+            st.session_state.progress["wrong_ids"].remove(wid)
+        save_progress(st.session_state.progress)
+        st.session_state.batch_index += 1
+        st.session_state.show_meaning = False
+        st.rerun()
